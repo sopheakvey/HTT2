@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HTT</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.12.313/pdf.worker.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.12.313/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.7.1/jszip.min.js"></script>
+
+    <style>
+        /* Apply Inter font family globally */
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* Custom styles for better visual effects if needed, though Tailwind covers most */
+        button:not([disabled]) {
+            transition: all 0.3s ease-in-out;
+        }
+        button:not([disabled]):hover {
+            transform: scale(1.05) translateY(-2px);
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        }
+        /* Style for file input label to make it a custom button */
+        .custom-file-upload {
+            border: 2px dashed #CBD5E0; /* gray-300 */
+            border-radius: 0.5rem; /* rounded-lg */
+            background-color: #F9FAFB; /* gray-50 */
+            padding: 1rem;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        .custom-file-upload:hover {
+            background-color: #F3F4F6; /* gray-100 */
+        }
+        .custom-file-upload input[type="file"] {
+            display: none;
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <div id="root"></div>
+
+    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <script type="text/babel">
+        // Initialize PDF.js worker
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.12.313/pdf.worker.min.js';
+
+        // Main App component
+        const App = () => {
+            // State for all selected files
+            const [selectedFiles, setSelectedFiles] = React.useState([]);
+            const [previews, setPreviews] = React.useState([]);
+            // State for the combined result URLs (array for multiple PDFs)
+            const [combinedResults, setCombinedResults] = React.useState([]);
+            // State for the selected output format
+            const [outputFormat, setOutputFormat] = React.useState('pdf'); // Default to PDF
+            // State for loading status during conversion
+            const [isLoading, setIsLoading] = React.useState(false);
+            // State for displaying messages to the user
+            const [message, setMessage] = React.useState('');
+            // State to track if conversion is complete
+            const [conversionComplete, setConversionComplete] = React.useState(false);
+
+            /**
+             * Generates a thumbnail for PDF preview.
+             * @param {File} pdfFile - The PDF file to create a thumbnail for.
+             * @returns {Promise<string|null>} - Data URL of the thumbnail image or null if error.
+             */
+            const generatePdfThumbnail = async (pdfFile) => {
+                try {
+                    const pdfUrl = URL.createObjectURL(pdfFile);
+                    const loadingTask = pdfjsLib.getDocument(pdfUrl);
+                    const pdf = await loadingTask.promise;
+                    const page = await pdf.getPage(1); // Get the first page for thumbnail
+
+                    // Using a higher scale for better thumbnail quality
+                    const viewport = page.getViewport({ scale: 1.0 }); // Increased from 0.5 for better thumbnail
+                    const canvas = document.createElement('canvas');
+                    const context = canvas.getContext('2d');
+                    canvas.height = viewport.height;
+                    canvas.width = viewport.width;
+
+                    await page.render({
+                        canvasContext: context,
+                        viewport: viewport
+                    }).promise;
+
+                    URL.revokeObjectURL(pdfUrl); // Clean up object URL
+                    return canvas.toDataURL('image/png');
+                } catch (error) {
+                    console.error('Error generating PDF thumbnail:', error);
+                    return null;
+                }
+            };
+
+            /**
+             * Handles the file selection for multiple files.
+             * Reads the selected files and updates the state.
+             * @param {Object} event - The change event from the file input.
+             */
+            const handleFilesChange = async (event) => {
+                const files = Array.from(event.target.files);
+                // Clear the file input value to allow re-selection of the same file(s)
+                event.target.value = null;
+
+                if (files.length === 0) {
+                    setSelectedFiles([]);
+                    setPreviews([]);
+                    setCombinedResults([]);
+                    setMessage('');
+                    setConversionComplete(false);
+                    return;
+                }
+
+                setCombinedResults([]); // Clear previous combined result
+                setMessage('');
+                setConversionComplete(false);
+
+                const validFiles = [];
+                const newPreviews = [];
+
+                for (const file of files) {
+                    if (file.type.startsWith('image/')) {
+                        validFiles.push({ file, type: 'image' });
+                        newPreviews.push({ name: file.name, url: URL.createObjectURL(file), type: 'image' });
+                    } else if (file.type === 'application/pdf') {
+                        validFiles.push({ file, type: 'pdf' });
+                        const thumbnail = await generatePdfThumbnail(file);
+                        newPreviews.push({ name: file.name, url: thumbnail, type: 'pdf' });
+                    } else {
+                        setMessage(`Unsupported file type for ${file.name}. Only images or PDF files are supported.`);
+                        continue; // Skip unsupported files
+                    }
+                }
+                setSelectedFiles(validFiles);
+                setPreviews(newPreviews);
+
+                if (validFiles.length > 0 && validFiles.length % 2 !== 0) {
+                    setMessage('Warning: An odd number of files was selected. The last file will not be combined.');
+                } else {
+                    setMessage('');
+                }
+            };
+
+            /**
+             * Converts a PDF page to an image (canvas)
+             * @param {File} pdfFile - The PDF file to convert
+             * @param {number} pageNum - Page number to convert (1-based)
+             * @returns {Promise<HTMLCanvasElement>} - Canvas with rendered page
+             */
+            const pdfToCanvas = async (pdfFile, pageNum = 1) => {
+                const pdfUrl = URL.createObjectURL(pdfFile);
+                const loadingTask = pdfjsLib.getDocument(pdfUrl);
+                const pdf = await loadingTask.promise;
+                const page = await pdf.getPage(pageNum);
+
+                // Define A4 landscape dimensions (in points) for reference: 841.89 x 595.28 (roughly 297mm x 210mm at 72 DPI)
+                // For higher quality, we calculate pixel dimensions at a higher DPI (e.g., 300 DPI)
+                const DPI = 300; // Aiming for 300 DPI for better quality
+                const MM_PER_INCH = 25.4;
+                const A4_WIDTH_MM = 297;
+                const A4_HEIGHT_MM = 210;
+
+                const A4_WIDTH_PX_HIGH_RES = (A4_WIDTH_MM / MM_PER_INCH) * DPI; // 297mm / 25.4mm/inch * 300 dpi = 3508 pixels
+                const A4_HEIGHT_PX_HIGH_RES = (A4_HEIGHT_MM / MM_PER_INCH) * DPI; // 210mm / 25.4mm/inch * 300 dpi = 2480 pixels
+
+                const viewport = page.getViewport({ scale: 1.0 }); // Get original viewport scale
+
+                // Calculate scale to render PDF page at a target resolution (e.g., 300 DPI)
+                // This scale is relative to PDF.js internal units (72 DPI)
+                const renderScale = DPI / 72; // Convert 72 DPI default to desired DPI
+                const scaledViewport = page.getViewport({ scale: renderScale });
+
+                const canvas = document.createElement('canvas');
+                const context = canvas.getContext('2d');
+                canvas.height = scaledViewport.height;
+                canvas.width = scaledViewport.width;
+
+                await page.render({
+                    canvasContext: context,
+                    viewport: scaledViewport
+                }).promise;
+                URL.revokeObjectURL(pdfUrl); // Clean up object URL
+                return canvas;
+            };
+
+            /**
+             * Helper function to load an image from a URL.
+             * @param {string} url - The URL of the image.
+             * @returns {Promise<HTMLImageElement>} - Loaded image element.
+             */
+            const loadImage = (url) => {
+                return new Promise((resolve, reject) => {
+                    const img = new Image();
+                    img.onload = () => resolve(img);
+                    img.onerror = reject;
+                    img.src = url;
+                });
+            };
+
+            /**
+             * Handles the conversion process: combines the selected files in pairs.
+             */
+            const handleConvert = async () => {
+                if (selectedFiles.length < 2) {
+                    setMessage('Please select at least two files to combine.');
+                    return;
+                }
+
+                setIsLoading(true);
+                setMessage('Combining files and generating PDFs...');
+                setCombinedResults([]);
+                setConversionComplete(false);
+
+                try {
+                    // Define A4 landscape dimensions at a higher resolution (e.g., 300 DPI) for the final canvas
+                    const DPI = 300;
+                    const MM_PER_INCH = 25.4;
+                    const A4_WIDTH_MM = 297;
+                    const A4_HEIGHT_MM = 210;
+
+                    const A4_CANVAS_WIDTH = (A4_WIDTH_MM / MM_PER_INCH) * DPI; // A4 landscape width in pixels at 300 DPI
+                    const A4_CANVAS_HEIGHT = (A4_HEIGHT_MM / MM_PER_INCH) * DPI; // A4 landscape height in pixels at 300 DPI
+                    const HALF_CANVAS_WIDTH = A4_CANVAS_WIDTH / 2;
+
+
+                    const generatedOutputBlobs = [];
+
+                    /**
+                     * Helper function to draw and scale an image/canvas within a given target area
+                     * @param {CanvasRenderingContext2D} ctx - The canvas rendering context
+                     * @param {HTMLImageElement|HTMLCanvasElement} image - The image/canvas to draw
+                     * @param {number} targetX - The X coordinate of the top-left corner
+                     * @param {number} targetY - The Y coordinate of the top-left corner
+                     * @param {number} targetW - The width of the target area
+                     * @param {number} targetH - The height of the target area
+                     */
+                    const drawScaled = (ctx, image, targetX, targetY, targetW, targetH) => {
+                        const imageAspectRatio = image.width / image.height;
+                        const targetAspectRatio = targetW / targetH;
+
+                        let scaledWidth, scaledHeight, drawX, drawY;
+
+                        if (imageAspectRatio > targetAspectRatio) {
+                            // Image is wider than target area, scale by width
+                            scaledWidth = targetW;
+                            scaledHeight = targetW / imageAspectRatio;
+                            drawX = targetX;
+                            drawY = targetY + (targetH - scaledHeight) / 2;
+                        } else {
+                            // Image is taller or same aspect ratio, scale by height
+                            scaledHeight = targetH;
+                            scaledWidth = targetH * imageAspectRatio;
+                            drawX = targetX + (targetW - scaledWidth) / 2;
+                            drawY = targetY;
+                        }
+                        ctx.drawImage(image, drawX, drawY, scaledWidth, scaledHeight);
+                    };
+
+                    for (let i = 0; i < selectedFiles.length; i += 2) {
+                        const file1 = selectedFiles[i];
+                        const file2 = selectedFiles[i + 1];
+
+                        if (!file1 || !file2) {
+                            setMessage('Skipping last file as it does not have a pair.');
+                            break;
+                        }
+
+                        const canvas = document.createElement('canvas');
+                        canvas.width = A4_CANVAS_WIDTH;
+                        canvas.height = A4_CANVAS_HEIGHT;
+                        const ctx = canvas.getContext('2d');
+                        ctx.fillStyle = '#FFFFFF';
+                        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                        let img1, img2;
+
+                        if (file1.type === 'image') {
+                            // Load image, consider if you need to resize large images for performance or if they already have high resolution
+                            img1 = await loadImage(URL.createObjectURL(file1.file));
+                        } else if (file1.type === 'pdf') {
+                            img1 = await pdfToCanvas(file1.file); // This will now generate a higher resolution canvas
+                        }
+
+                        if (file2.type === 'image') {
+                            img2 = await loadImage(URL.createObjectURL(file2.file));
+                        } else if (file2.type === 'pdf') {
+                            img2 = await pdfToCanvas(file2.file); // This will now generate a higher resolution canvas
+                        }
+
+                        // Draw images/PDF canvases onto the main canvas, they will be scaled to fit
+                        drawScaled(ctx, img1, 0, 0, HALF_CANVAS_WIDTH, A4_CANVAS_HEIGHT);
+                        drawScaled(ctx, img2, HALF_CANVAS_WIDTH, 0, HALF_CANVAS_WIDTH, A4_CANVAS_HEIGHT);
+
+                        let outputBlob;
+                        let outputFileName;
+
+                        if (outputFormat === 'pdf') {
+                            const { jsPDF } = window.jspdf;
+                            // Initialize jsPDF with A4 landscape dimensions in 'px' units to match canvas resolution
+                            // This ensures the PDF's internal resolution matches the canvas.
+                            const doc = new jsPDF({
+                                orientation: 'landscape',
+                                unit: 'px', // Use pixels as unit for better control over resolution
+                                format: [A4_CANVAS_WIDTH, A4_CANVAS_HEIGHT] // Pass exact canvas dimensions
+                            });
+                            const imgData = canvas.toDataURL('image/png'); // Use PNG for best quality for PDF embedding
+                            // Add image to PDF. Dimensions in addImage should match doc unit (px) and canvas dimensions.
+                            doc.addImage(imgData, 'PNG', 0, 0, A4_CANVAS_WIDTH, A4_CANVAS_HEIGHT);
+                            outputBlob = doc.output('blob');
+                            outputFileName = `combined_page_${i / 2 + 1}.pdf`;
+                        } else if (outputFormat === 'png') {
+                            outputBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+                            outputFileName = `combined_page_${i / 2 + 1}.png`;
+                        } else if (outputFormat === 'jpeg') {
+                            outputBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.9)); // 0.9 quality
+                            outputFileName = `combined_page_${i / 2 + 1}.jpeg`;
+                        }
+                        generatedOutputBlobs.push({ blob: outputBlob, name: outputFileName });
+                    }
+
+                    setCombinedResults(generatedOutputBlobs);
+                    setIsLoading(false);
+                    setConversionComplete(true);
+                    setMessage(`Successfully combined ${Math.floor(selectedFiles.length / 2)} pair(s) into separate ${outputFormat.toUpperCase()} files.`);
+
+                } catch (error) {
+                    console.error('Error during conversion:', error);
+                    setMessage('Error during conversion: ' + error.message);
+                    setIsLoading(false);
+                }
+            };
+
+            /**
+             * Handles the download of all combined files as a ZIP, or direct download if only one.
+             */
+            const handleDownloadAll = async () => {
+                if (combinedResults.length === 0) {
+                    setMessage('No combined files to download.');
+                    return;
+                }
+
+                if (combinedResults.length === 1 && outputFormat !== 'zip') { // Direct download only if single file and not explicitly a zip format
+                    const item = combinedResults[0];
+                    const link = document.createElement('a');
+                    link.href = URL.createObjectURL(item.blob);
+                    link.download = item.name;
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    URL.revokeObjectURL(link.href);
+                    setMessage('Download initiated!');
+                } else {
+                    const zip = new JSZip();
+                    combinedResults.forEach((item) => {
+                        zip.file(item.name, item.blob);
+                    });
+
+                    setMessage('Preparing ZIP for download...');
+                    zip.generateAsync({ type: "blob" })
+                        .then(function(content) {
+                            const link = document.createElement('a');
+                            link.href = URL.createObjectURL(content);
+                            link.download = `combined_2up_A4_files.${outputFormat === 'pdf' ? 'pdf' : outputFormat}_zip.zip`; // Dynamic zip name
+                            document.body.appendChild(link);
+                            link.click();
+                            document.body.removeChild(link);
+                            URL.revokeObjectURL(link.href); // Clean up object URL
+                            setMessage('Download initiated!');
+                        })
+                        .catch(error => {
+                            console.error('Error generating zip:', error);
+                            setMessage('Error generating ZIP file: ' + error.message);
+                        });
+                }
+            };
+
+            /**
+             * Clears all selected files and previews.
+             */
+            const handleClearFiles = () => {
+                setSelectedFiles([]);
+                setPreviews([]);
+                setCombinedResults([]);
+                setMessage('');
+                setConversionComplete(false);
+            };
+
+            /**
+             * Resets the application to the initial state, allowing the user to start over.
+             */
+            const handleStartOver = () => {
+                handleClearFiles();
+            };
+
+            return (
+                <div className="min-h-screen bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center p-4 font-sans">
+                    <div className="bg-white p-8 rounded-xl shadow-2xl w-full max-w-4xl space-y-8">
+                        <h1 className="text-4xl font-extrabold text-center text-gray-900 mb-8">
+                            Multi-File 2-Up Image/PDF Combiner (A4-A5)
+                        </h1>
+                        <p className="text-center text-gray-600 mb-6">
+                            Select multiple image and/or PDF files to combine them into pairs on A4 pages.
+                        </p>
+
+                        {/* Input section */}
+                        {!conversionComplete && (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className="custom-file-upload">
+                                    <label htmlFor="files-upload" className="flex flex-col items-center justify-center h-full w-full text-blue-600 font-medium hover:underline">
+                                        <input
+                                            id="files-upload"
+                                            type="file"
+                                            accept="image/*, application/pdf"
+                                            multiple // Allow multiple file selection
+                                            onChange={handleFilesChange}
+                                            className="hidden"
+                                        />
+                                        <svg className="w-12 h-12 text-gray-400 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+                                        </svg>
+                                        <p className="text-lg text-gray-700">Select Multiple Files</p>
+                                        <p className="text-sm text-gray-500">(Images or PDFs)</p>
+                                    </label>
+                                </div>
+
+                                <div className="custom-file-upload">
+                                    <label htmlFor="folder-upload" className="flex flex-col items-center justify-center h-full w-full text-blue-600 font-medium hover:underline">
+                                        <input
+                                            id="folder-upload"
+                                            type="file"
+                                            webkitdirectory=""
+                                            mozdirectory=""
+                                            accept="image/*, application/pdf"
+                                            onChange={handleFilesChange}
+                                            className="hidden"
+                                        />
+                                        <svg className="w-12 h-12 text-gray-400 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path>
+                                        </svg>
+                                        <p className="text-lg text-gray-700">Select A Folder</p>
+                                        <p className="text-sm text-gray-500">(Will process all supported files)</p>
+                                    </label>
+                                </div>
+                            </div>
+                        )}
+
+
+                        {previews.length > 0 && !conversionComplete && (
+                            <div className="mt-4 border border-gray-200 rounded-md p-2 w-full max-h-48 overflow-y-auto">
+                                <h3 className="text-md font-semibold text-gray-700 mb-2">Selected Files ({selectedFiles.length}):</h3>
+                                <div className="flex flex-wrap gap-2 justify-center">
+                                    {previews.map((preview, index) => (
+                                        <div key={index} className="flex flex-col items-center p-2 border rounded-md shadow-sm">
+                                            <img
+                                                src={preview.url}
+                                                alt={`Preview ${index + 1}`}
+                                                className="w-24 h-24 object-contain rounded-sm"
+                                                onError={(e) => { e.target.src = 'data:image/svg+xml;base64,...'; /* fallback for broken previews */ }}
+                                            />
+                                            <span className="text-xs text-gray-600 truncate w-24 text-center mt-1">{preview.name}</span>
+                                            {preview.type === 'pdf' && (
+                                                <span className="px-1 bg-red-100 text-red-800 text-xs font-medium rounded-full mt-1">PDF</span>
+                                            )}
+                                            {preview.type === 'image' && (
+                                                <span className="px-1 bg-green-100 text-green-800 text-xs font-medium rounded-full mt-1">IMAGE</span>
+                                            )}
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {!conversionComplete && (
+                            <div className="flex flex-col items-center mt-6">
+                                <label htmlFor="output-format" className="text-lg font-semibold text-gray-700 mb-2">
+                                    Select Output Format:
+                                </label>
+                                <div className="relative inline-block w-64">
+                                    <select
+                                        id="output-format"
+                                        value={outputFormat}
+                                        onChange={(e) => setOutputFormat(e.target.value)}
+                                        className="block appearance-none w-full bg-white border border-gray-300 text-gray-700 py-3 px-4 pr-8 rounded-lg shadow-sm leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                                    >
+                                        <option value="png">PNG (.png)</option>
+                                        <option value="jpeg">JPEG (.jpg)</option>
+                                        <option value="pdf">PDF (.pdf)</option>
+                                    </select>
+                                    <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700">
+                                        <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/></svg>
+                                    </div>
+                                </div>
+                                <p className="text-center text-gray-500 text-sm italic mt-2">
+                                    Combined files will be outputted in the selected format.
+                                </p>
+                            </div>
+                        )}
+
+                        {/* Action Buttons */}
+                        <div className="flex justify-center gap-4">
+                            {selectedFiles.length > 0 && !conversionComplete && (
+                                <button
+                                    onClick={handleClearFiles}
+                                    className="px-6 py-3 bg-red-500 text-white font-bold rounded-full shadow-lg hover:bg-red-600 transition duration-300 ease-in-out transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+                                    disabled={isLoading}
+                                >
+                                    <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                                    Clear Files
+                                </button>
+                            )}
+
+                            {!conversionComplete && (
+                                <button
+                                    onClick={handleConvert}
+                                    disabled={isLoading || selectedFiles.length < 2}
+                                    className="px-8 py-3 bg-gradient-to-r from-green-500 to-teal-600 text-white font-bold rounded-full shadow-lg hover:from-green-600 hover:to-teal-700 transition duration-300 ease-in-out transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+                                >
+                                    {isLoading ? (
+                                        <>
+                                            <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                            </svg>
+                                            Processing...
+                                        </>
+                                    ) : (
+                                        'Combine Selected Files in Pairs'
+                                    )}
+                                </button>
+                            )}
+                        </div>
+
+                        {/* Message Area */}
+                        {message && (
+                            <div className={`text-center text-lg font-medium p-3 rounded-lg ${
+                                message.includes('Error') || message.includes('Warning') ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'
+                            }`}>
+                                {message}
+                            </div>
+                        )}
+
+                        {/* Combined Result Download Link */}
+                        {conversionComplete && combinedResults.length > 0 && (
+                            <div className="mt-8 text-center">
+                                <h2 className="text-2xl font-bold text-gray-800 mb-4">Conversion Complete!</h2>
+                                <p className="text-gray-700 mb-4">
+                                    {combinedResults.length} combined {outputFormat.toUpperCase()}(s) are ready.
+                                </p>
+                                <div className="flex justify-center gap-4">
+                                    <button
+                                        onClick={handleDownloadAll}
+                                        className="inline-flex items-center px-6 py-3 bg-purple-600 text-white font-bold rounded-full shadow-lg hover:bg-purple-700 transition duration-300 ease-in-out transform hover:scale-105"
+                                    >
+                                        <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7v4m0 0v4m0-4h4m-4 0H4m12 0v4m0 0v4m0-4h4m-4 0h-4M5 21v-7a2 2 0 012-2h10a2 2 0 012 2v7"></path>
+                                        </svg>
+                                        Download All Combined Files ({combinedResults.length > 1 ? 'ZIP' : outputFormat.toUpperCase()})
+                                    </button>
+                                    <button
+                                        onClick={handleStartOver}
+                                        className="inline-flex items-center px-6 py-3 bg-blue-500 text-white font-bold rounded-full shadow-lg hover:bg-blue-600 transition duration-300 ease-in-out transform hover:scale-105"
+                                    >
+                                        <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004 12c0 2.21.896 4.202 2.342 5.658.324.324.647.647 1 .951m2.548 1.488A10.437 10.437 0 0110 21h.007a.75.75 0 00.75-.75V19a.75.75 0 00-.75-.75h-.007a.75.75 0 01-.75-.75v-1.5a.75.75 0 01.75-.75h.007a.75.75 0 00.75-.75v-1.5a.75.75 0 00-.75-.75h-.007a.75.75 0 01-.75-.75V7.5a.75.75 0 00-.75-.75H5.007a.75.75 0 01-.75-.75V4a.75.75 0 00-.75-.75z"></path></svg>
+                                        Start Over
+                                    </button>
+                                </div>
+                                <p className="mt-2 text-sm text-gray-500">
+                                    Your files will be {combinedResults.length > 1 ? 'zipped' : 'downloaded'} and saved as: combined_2up_A4_files.{outputFormat}{combinedResults.length > 1 ? '_zip.zip' : ''}
+                                </p>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        };
+
+        // Render the React App component to the root div using createRoot for React 18 compatibility
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
